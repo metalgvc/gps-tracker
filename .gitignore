@@ -1,0 +1,10 @@
+Debug
+Drivers
+Middlewares
+.cproject
+.mxproject
+.osx.project
+.project
+.settings
+stlink.cfg
+syscalls.c
