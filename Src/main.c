@@ -1,135 +1,114 @@
-/* USER CODE BEGIN Header */
-/**
-  ******************************************************************************
-  * @file           : main.c
-  * @brief          : Main program body
-  ******************************************************************************
-  * This notice applies to any and all portions of this file
-  * that are not between comment pairs USER CODE BEGIN and
-  * USER CODE END. Other portions of this file, whether 
-  * inserted by the user or by software development tools
-  * are owned by their respective copyright owners.
-  *
-  * Copyright (c) 2019 STMicroelectronics International N.V. 
-  * All rights reserved.
-  *
-  * Redistribution and use in source and binary forms, with or without 
-  * modification, are permitted, provided that the following conditions are met:
-  *
-  * 1. Redistribution of source code must retain the above copyright notice, 
-  *    this list of conditions and the following disclaimer.
-  * 2. Redistributions in binary form must reproduce the above copyright notice,
-  *    this list of conditions and the following disclaimer in the documentation
-  *    and/or other materials provided with the distribution.
-  * 3. Neither the name of STMicroelectronics nor the names of other 
-  *    contributors to this software may be used to endorse or promote products 
-  *    derived from this software without specific written permission.
-  * 4. This software, including modifications and/or derivative works of this 
-  *    software, must execute solely and exclusively on microcontroller or
-  *    microprocessor devices manufactured by or for STMicroelectronics.
-  * 5. Redistribution and use of this software other than as permitted under 
-  *    this license is void and will automatically terminate your rights under 
-  *    this license. 
-  *
-  * THIS SOFTWARE IS PROVIDED BY STMICROELECTRONICS AND CONTRIBUTORS "AS IS" 
-  * AND ANY EXPRESS, IMPLIED OR STATUTORY WARRANTIES, INCLUDING, BUT NOT 
-  * LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY, FITNESS FOR A 
-  * PARTICULAR PURPOSE AND NON-INFRINGEMENT OF THIRD PARTY INTELLECTUAL PROPERTY
-  * RIGHTS ARE DISCLAIMED TO THE FULLEST EXTENT PERMITTED BY LAW. IN NO EVENT 
-  * SHALL STMICROELECTRONICS OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT,
-  * INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
-  * LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, 
-  * OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF 
-  * LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING 
-  * NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE,
-  * EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-  *
-  ******************************************************************************
-  */
-/* USER CODE END Header */
 
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
 #include "cmsis_os.h"
-#include "fatfs.h"
+//#include "fatfs.h"
 
-I2C_HandleTypeDef hi2c1;
+#include "utils/SDcard.h"
+#include "utils/uart_debug.h"
+#include "utils/SIM800.h"
+#include "utils/GP4SF1109F2.h"
+
+#include "tasks/GSM_module_task.h"
+#include "tasks/GPS_module_task.h"
+
 SPI_HandleTypeDef hspi1;
 UART_HandleTypeDef huart1;
+UART_HandleTypeDef huart3;
 
 osThreadId defaultTaskHandle;
+osThreadId GSMModuleTaskHandle;
+osThreadId GPSModuleTaskHandle;
 
+//osMessageQId GSMModuleQ;
+
+// UART Rx/Tx buffers
+uint8_t GSMTxBuff[128];
+uint8_t GPSRxBuff[128];
+uint8_t GPSTxBuff[128];
 
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
-static void MX_I2C1_Init(void);
 static void MX_SPI1_Init(void);
-static void MX_USART1_UART_Init(void);
+static void MX_USART1_UART_Init(void);  // GSM interface
+static void MX_USART3_UART_Init(void);	// GPS interface
 void StartDefaultTask(void const * argument);
 
 /**
   * @brief  The application entry point.
   * @retval int
   */
-int main(void)
-{
-  HAL_Init();
-  SystemClock_Config();
+int main(void) {
 
-  MX_GPIO_Init();
-  MX_I2C1_Init();
-  MX_SPI1_Init();  // used for SDcard
-  MX_USART1_UART_Init();
+    HAL_Init();
+    SystemClock_Config();
 
-  // =============================
-  uartDebugInit();
-  uartDebugSendStr("start");
+    MX_GPIO_Init();
+    MX_SPI1_Init();  			// SDcard interface
+    MX_USART1_UART_Init();	// GSM interface
+    MX_USART3_UART_Init();	// GPS interface
 
-  MX_FATFS_Init();
-  FATFS fs;
-  FIL fil;
-  int frCode;
+    //char cmd[] = "START\r\n";
+    //HAL_UART_Transmit(&huart1, cmd, sizeof(cmd)-1, HAL_MAX_DELAY);
+    //HAL_UART_Transmit_IT(&huart1, &cmd, sizeof(cmd)-1);
 
-  // mount SD
-  frCode = f_mount(&fs, "", 1);
-  if (frCode != FR_OK) {
-	  Error_Handler(__FILE__, __LINE__);
-  }
+    // =============================
+    uartDebugInit();
+    uartDebugSendStr("start");
 
-  // open file
-  frCode = f_open(&fil, "test.txt", FA_OPEN_ALWAYS | FA_READ | FA_WRITE);
-  if (frCode != FR_OK) {
-	  Error_Handler(__FILE__, __LINE__);
-  }
+    // =============================
 
-  // write
-  frCode = f_puts("test str\n", &fil);
-  if (frCode != FR_OK) {
-	  Error_Handler(__FILE__, __LINE__);
-  }
+    osThreadDef(defaultTask, StartDefaultTask, osPriorityNormal, 0, 128);
+    defaultTaskHandle = osThreadCreate(osThread(defaultTask), NULL);
 
-  // close file
-  frCode = f_close(&fil);
-  if (frCode != FR_OK) {
-	  Error_Handler(__FILE__, __LINE__);
-  }
+    // =============================================
+    // GSM task - receive and handle commands
 
-  // unmount SD
-  frCode = f_mount(NULL, "", 1);
-  if (frCode != FR_OK) {
-	  Error_Handler(__FILE__, __LINE__);
-  }
-  // =============================
+    // create/init task
+    osThreadDef(GSMModuleTask, StartGSMModuleTask, osPriorityNormal, 0, 128);
+    GSMModuleTaskHandle = osThreadCreate(osThread(GSMModuleTask), NULL);
 
-  osThreadDef(defaultTask, StartDefaultTask, osPriorityNormal, 0, 128);
-  defaultTaskHandle = osThreadCreate(osThread(defaultTask), NULL);
+    // create/init queue
+    //osMessageQDef(_GSMModuleQ, 1, uint8_t);
+    //GSMModuleQ = osMessageCreate(osMessageQ(_GSMModuleQ), GSMModuleTaskHandle);
+    //GSMModuleQ = osMessageCreate(osMessageQ(_GSMModuleQ), NULL);
 
-  /* Start scheduler */
-  osKernelStart();
+    // =============================================
+    // GPS task
+    osThreadDef(GPSModuleTask, StartGPSModuleTask, osPriorityNormal, 0, 128);
+    GPSModuleTaskHandle = osThreadCreate(osThread(GPSModuleTask), NULL);
 
-  while (1) { }
+    /* Start scheduler */
+    osKernelStart();
+
+    while (1) { }
 }
+
+/**
+ * UART interrupt callback
+ */
+void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
+
+	// receive data from GSM SIM800
+	if (huart == &huart1) {
+	    SIM800_Rx_callback(huart);
+
+    // received data from GPS
+	} else if (huart == &huart3) {
+	    GPS_Rx_callback(&huart3);
+	}
+
+}
+
+void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart) {
+
+    if (huart == &huart1) {
+        SIM800_Tx_callback(huart);
+    }
+}
+
+
 
 /**
   * @brief System Clock Configuration
@@ -169,28 +148,6 @@ void SystemClock_Config(void)
 }
 
 /**
-  * @brief I2C1 Initialization Function
-  * @param None
-  * @retval None
-  */
-static void MX_I2C1_Init(void)
-{
-  hi2c1.Instance = I2C1;
-  hi2c1.Init.ClockSpeed = 100000;
-  hi2c1.Init.DutyCycle = I2C_DUTYCYCLE_2;
-  hi2c1.Init.OwnAddress1 = 0;
-  hi2c1.Init.AddressingMode = I2C_ADDRESSINGMODE_7BIT;
-  hi2c1.Init.DualAddressMode = I2C_DUALADDRESS_DISABLE;
-  hi2c1.Init.OwnAddress2 = 0;
-  hi2c1.Init.GeneralCallMode = I2C_GENERALCALL_DISABLE;
-  hi2c1.Init.NoStretchMode = I2C_NOSTRETCH_DISABLE;
-  if (HAL_I2C_Init(&hi2c1) != HAL_OK)
-  {
-    Error_Handler(__FILE__, __LINE__);
-  }
-}
-
-/**
   * @brief SPI1 Initialization Function for SD card
   * @param None
   * @retval None
@@ -224,7 +181,7 @@ static void MX_SPI1_Init(void)
 static void MX_USART1_UART_Init(void)
 {
   huart1.Instance = USART1;
-  huart1.Init.BaudRate = 115200;
+  huart1.Init.BaudRate = 9600;
   huart1.Init.WordLength = UART_WORDLENGTH_8B;
   huart1.Init.StopBits = UART_STOPBITS_1;
   huart1.Init.Parity = UART_PARITY_NONE;
@@ -237,6 +194,22 @@ static void MX_USART1_UART_Init(void)
   }
 }
 
+static void MX_USART3_UART_Init(void)
+{
+  huart3.Instance = USART3;
+  huart3.Init.BaudRate = 115200;
+  huart3.Init.WordLength = UART_WORDLENGTH_8B;
+  huart3.Init.StopBits = UART_STOPBITS_1;
+  huart3.Init.Parity = UART_PARITY_NONE;
+  huart3.Init.Mode = UART_MODE_TX_RX;
+  huart3.Init.HwFlowCtl = UART_HWCONTROL_NONE;
+  huart3.Init.OverSampling = UART_OVERSAMPLING_16;
+  if (HAL_UART_Init(&huart3) != HAL_OK)
+  {
+    Error_Handler(__FILE__, __LINE__);
+  }
+}
+
 /**
   * @brief GPIO Initialization Function
   * @param None
@@ -244,33 +217,42 @@ static void MX_USART1_UART_Init(void)
   */
 static void MX_GPIO_Init(void)
 {
-  GPIO_InitTypeDef GPIO_InitStruct = {0};
+    GPIO_InitTypeDef GPIO_InitStruct = {0};
 
-  /* GPIO Ports Clock Enable */
-  __HAL_RCC_GPIOC_CLK_ENABLE();
-  __HAL_RCC_GPIOD_CLK_ENABLE();
-  __HAL_RCC_GPIOA_CLK_ENABLE();
-  __HAL_RCC_GPIOB_CLK_ENABLE();
+    /* GPIO Ports Clock Enable */
+    __HAL_RCC_GPIOC_CLK_ENABLE();
+    __HAL_RCC_GPIOD_CLK_ENABLE();
+    __HAL_RCC_GPIOA_CLK_ENABLE();
+    __HAL_RCC_GPIOB_CLK_ENABLE();
 
-  /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOC, GPIO_PIN_13, GPIO_PIN_RESET);
+    /*Configure GPIO pin Output Level */
+    HAL_GPIO_WritePin(GPIOC, GPIO_PIN_13, GPIO_PIN_RESET);
 
-  /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOB, GPIO_PIN_0, GPIO_PIN_RESET);
+    /*Configure GPIO pin Output Level */
+    HAL_GPIO_WritePin(GPIOB, GPIO_PIN_0, GPIO_PIN_RESET);
 
-  /*Configure GPIO pin : PC13 */
-  GPIO_InitStruct.Pin = GPIO_PIN_13;
-  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
-  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-  HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
+    HAL_GPIO_WritePin(SIM800_BOOT_PORT, SIM800_BOOT_PIN, GPIO_PIN_SET);
 
-  /*Configure GPIO pin : PB0 */
-  GPIO_InitStruct.Pin = GPIO_PIN_0;
-  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
-  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-  HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
+    /*Configure GPIO pin : PC13 */
+    GPIO_InitStruct.Pin = GPIO_PIN_13;
+    GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+    GPIO_InitStruct.Pull = GPIO_NOPULL;
+    GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+    HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
+
+    /*Configure GPIO pin : PB0 */
+    GPIO_InitStruct.Pin = GPIO_PIN_0;
+    GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+    GPIO_InitStruct.Pull = GPIO_NOPULL;
+    GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+    HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
+
+    /*Configure GPIO SIM800 boot pin */
+    GPIO_InitStruct.Pin = SIM800_BOOT_PIN;
+    GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+    GPIO_InitStruct.Pull = GPIO_NOPULL;
+    GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+    HAL_GPIO_Init(SIM800_BOOT_PORT, &GPIO_InitStruct);
 
 }
 
@@ -296,7 +278,7 @@ void StartDefaultTask(void const * argument)
 
     osDelay(1000);
 
-    uartDebugSendStr("OK\n");
+    //uartDebugSendStr("OK\n");
 
   }
 }
