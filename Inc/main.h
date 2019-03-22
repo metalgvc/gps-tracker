@@ -67,7 +67,14 @@ extern "C" {
 
 /* Exported types ------------------------------------------------------------*/
 /* USER CODE BEGIN ET */
-
+typedef struct {
+    UART_HandleTypeDef *huart;
+    uint16_t prevCNDTR;
+    uint16_t respTmpBuffSize;
+    uint8_t *respTmpBuff;          // circular UART DMA receive buffer
+    uint16_t receivedMsgBuffSize;
+    uint8_t *receivedMsgBuff;      // received message buffer to parse
+} UART_DMA_Rx_t;
 /* USER CODE END ET */
 
 /* Exported constants --------------------------------------------------------*/
@@ -75,8 +82,6 @@ extern "C" {
 #define true 1
 #define false 0
 
-#define SD_CS_Pin GPIO_PIN_0
-#define SD_CS_GPIO_Port GPIOB
 /* USER CODE END EC */
 
 /* Exported macro ------------------------------------------------------------*/
@@ -88,10 +93,16 @@ extern "C" {
 void Error_Handler(void);
 
 /* USER CODE BEGIN EFP */
-
+void UART_DMA_Check_Rx_Buff(UART_DMA_Rx_t *RxBuff);
 /* USER CODE END EFP */
 
 /* Private defines -----------------------------------------------------------*/
+#define LED_ON_BOARD_Pin GPIO_PIN_13
+#define LED_ON_BOARD_GPIO_Port GPIOC
+#define SD_CS_Pin GPIO_PIN_0
+#define SD_CS_GPIO_Port GPIOB
+#define SIM800_BOOT_Pin GPIO_PIN_8
+#define SIM800_BOOT_GPIO_Port GPIOA
 /* USER CODE BEGIN Private defines */
 
 /* USER CODE END Private defines */

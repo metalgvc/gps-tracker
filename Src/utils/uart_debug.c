@@ -23,7 +23,7 @@ void uartDebugInit(void)
 	dbguart.Init.OverSampling = UART_OVERSAMPLING_16;
 	if (HAL_UART_Init(&dbguart) != HAL_OK)
 	{
-		Error_Handler(__FILE__, __LINE__);
+		Error_Handler();
 	}
 }
 

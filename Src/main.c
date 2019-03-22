@@ -86,12 +86,16 @@ UART_HandleTypeDef huart2;
 UART_HandleTypeDef huart3;
 DMA_HandleTypeDef hdma_usart1_rx;
 DMA_HandleTypeDef hdma_usart1_tx;
+DMA_HandleTypeDef hdma_usart3_rx;
+DMA_HandleTypeDef hdma_usart3_tx;
 
 osThreadId defaultTaskHandle;
 /* USER CODE BEGIN PV */
 osThreadId GSMModuleTaskHandle;
 osThreadId GPSModuleTaskHandle;
 /* USER CODE END PV */
+
+char DATE[9] = "xxxxxxxx"; // YYYYmmdd\0
 
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
@@ -146,6 +150,26 @@ int main(void)
   MX_USART2_UART_Init();
   MX_USART3_UART_Init();
   /* USER CODE BEGIN 2 */
+  SDcard_init();
+
+  // TODO move to GPS task
+  GPSinit(&huart3);
+
+    HAL_UART_Transmit_DMA(&huart1, (uint8_t*)"---------\r\n", 11);
+
+    GPS_Msg_t *GPSMsg;
+
+    for(;;){
+        GPSMsg = GPS_waitMessage(30000);
+        if (GPSMsg->isMsgReceived == 1) {
+            SDCard_save(DATE, GPSMsg->msg);
+            HAL_UART_Transmit_DMA(&huart1, (uint8_t*)GPSMsg->msg, GPSMsg->msgBuffSize);
+            HAL_Delay(100);
+        }
+
+
+  //      HAL_Delay(200);
+    }
 
   /* USER CODE END 2 */
 
@@ -356,7 +380,8 @@ static void MX_USART3_UART_Init(void)
 
   /* USER CODE END USART3_Init 1 */
   huart3.Instance = USART3;
-  huart3.Init.BaudRate = 4800;
+  //huart3.Init.BaudRate = 4800;
+  huart3.Init.BaudRate = 9600;
   huart3.Init.WordLength = UART_WORDLENGTH_8B;
   huart3.Init.StopBits = UART_STOPBITS_1;
   huart3.Init.Parity = UART_PARITY_NONE;
@@ -382,6 +407,12 @@ static void MX_DMA_Init(void)
   __HAL_RCC_DMA1_CLK_ENABLE();
 
   /* DMA interrupt init */
+  /* DMA1_Channel2_IRQn interrupt configuration */
+  HAL_NVIC_SetPriority(DMA1_Channel2_IRQn, 5, 0);
+  HAL_NVIC_EnableIRQ(DMA1_Channel2_IRQn);
+  /* DMA1_Channel3_IRQn interrupt configuration */
+  HAL_NVIC_SetPriority(DMA1_Channel3_IRQn, 5, 0);
+  HAL_NVIC_EnableIRQ(DMA1_Channel3_IRQn);
   /* DMA1_Channel4_IRQn interrupt configuration */
   HAL_NVIC_SetPriority(DMA1_Channel4_IRQn, 5, 0);
   HAL_NVIC_EnableIRQ(DMA1_Channel4_IRQn);
@@ -407,32 +438,34 @@ static void MX_GPIO_Init(void)
   __HAL_RCC_GPIOB_CLK_ENABLE();
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOC, GPIO_PIN_13, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(LED_ON_BOARD_GPIO_Port, LED_ON_BOARD_Pin, GPIO_PIN_RESET);
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOB, GPIO_PIN_0, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(SD_CS_GPIO_Port, SD_CS_Pin, GPIO_PIN_RESET);
 
-  /*Configure GPIO pin : PC13 */
-  GPIO_InitStruct.Pin = GPIO_PIN_13;
+  /*Configure GPIO pin Output Level */
+  HAL_GPIO_WritePin(SIM800_BOOT_GPIO_Port, SIM800_BOOT_Pin, GPIO_PIN_RESET);
+
+  /*Configure GPIO pin : LED_ON_BOARD_Pin */
+  GPIO_InitStruct.Pin = LED_ON_BOARD_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-  HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
+  HAL_GPIO_Init(LED_ON_BOARD_GPIO_Port, &GPIO_InitStruct);
 
-  /*Configure GPIO pin : PB0 */
-  GPIO_InitStruct.Pin = GPIO_PIN_0;
+  /*Configure GPIO pin : SD_CS_Pin */
+  GPIO_InitStruct.Pin = SD_CS_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-  HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
+  HAL_GPIO_Init(SD_CS_GPIO_Port, &GPIO_InitStruct);
 
-  /*Configure GPIO SIM800 boot pin */
-  HAL_GPIO_WritePin(SIM800_BOOT_PORT, SIM800_BOOT_PIN, GPIO_PIN_RESET);
-    GPIO_InitStruct.Pin = SIM800_BOOT_PIN;
-    GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
-    GPIO_InitStruct.Pull = GPIO_NOPULL;
-    GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-    HAL_GPIO_Init(SIM800_BOOT_PORT, &GPIO_InitStruct);
+  /*Configure GPIO pin : SIM800_BOOT_Pin */
+  GPIO_InitStruct.Pin = SIM800_BOOT_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(SIM800_BOOT_GPIO_Port, &GPIO_InitStruct);
 
 }
 
@@ -449,6 +482,73 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
 void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart) {
     if (huart == &huart1) {
         SIM800_Tx_callback(huart);
+    }
+}
+
+void UART_DMA_Check_Rx_Buff(UART_DMA_Rx_t *RxBuff)
+{
+    uint16_t currCNDTR = __HAL_DMA_GET_COUNTER(RxBuff->huart->hdmarx);
+    volatile uint16_t dataPos;   // start data position
+    volatile uint16_t dataLen;       // data length
+
+    // check if have new data
+    if (currCNDTR != RxBuff->prevCNDTR) {
+
+        uint16_t i;
+
+        // find start pos for received buff if it not empty
+        uint16_t _pos;
+        for (_pos = 0; _pos < RxBuff->receivedMsgBuffSize; _pos++) {
+            if (RxBuff->receivedMsgBuff[_pos] == '\0') {
+                break;
+            }
+        }
+
+        dataPos = RxBuff->respTmpBuffSize - RxBuff->prevCNDTR;
+
+        // linear mode, wasn't buff overflow
+        if (RxBuff->prevCNDTR > currCNDTR) {
+            dataLen = RxBuff->prevCNDTR - currCNDTR;
+
+            if (dataLen + _pos <= RxBuff->receivedMsgBuffSize) {
+                // copy data, continued from end of prev message in received buff
+                for (i = dataPos; i < dataPos+dataLen; i++, _pos++) {
+                    RxBuff->receivedMsgBuff[_pos] = RxBuff->respTmpBuff[i];
+                }
+            } else {
+                Error_Handler();
+            }
+
+        // circular DMA buffer had overflowed and started from zero
+        } else {
+
+            // copy first part from end DMA buff
+            dataLen = RxBuff->prevCNDTR;
+            if (dataLen + _pos <= RxBuff->receivedMsgBuffSize) {
+
+                // copy from prev position to the end of circular buffer
+                for (i = dataPos; i < RxBuff->respTmpBuffSize; i++, _pos++) {
+                    RxBuff->receivedMsgBuff[_pos] = RxBuff->respTmpBuff[i];
+                }
+            } else {
+                Error_Handler();
+            }
+
+            // copy second part from start of DMA buff
+            dataPos = 0;
+            dataLen = RxBuff->respTmpBuffSize - currCNDTR;
+            if (dataLen + _pos <= RxBuff->receivedMsgBuffSize) {
+                for (i = dataPos; i < dataLen; i++, _pos++) {
+                    RxBuff->receivedMsgBuff[_pos] = RxBuff->respTmpBuff[i];
+                }
+            } else {
+                Error_Handler();
+            }
+        }
+
+        // TODO remove it
+        //HAL_UART_Transmit_DMA(&huart1, (uint8_t*)RxBuff->receivedMsgBuff, RxBuff->receivedMsgBuffSize);
+        RxBuff->prevCNDTR = currCNDTR;
     }
 }
 /* USER CODE END 4 */
@@ -518,6 +618,7 @@ void Error_Handler(void)
 //   strcpy(str, (char) line);
 //   strcpy(str, "\n");
 //   uartDebugSendStr(str);
+    HAL_UART_Transmit_DMA(&huart1, (uint8_t*)"ERR", 3);
 
   /* USER CODE END Error_Handler_Debug */
 }

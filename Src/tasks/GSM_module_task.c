@@ -15,16 +15,11 @@ void StartGSMModuleTask(void const * argument)
 {
 
     // init SIM800 module
-    SIM800init(&huart1, SIM800_BOOT_PORT, SIM800_BOOT_PIN);
+    SIM800init(&huart1);
 
     for(;;) {
 
-        ATResponse atResp = SIM800_waitMessage(&huart1, 1);
 
-        // handle commands
-        switch(atResp){
-            case AT_OK: handleATOK(); break;
-        }
     }
 }
 

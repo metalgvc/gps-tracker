@@ -7,50 +7,122 @@
 
 #include "GP4SF1109F2.h"
 
-uint8_t respTmpBuff[100];       // uart message buff
-uint8_t lastCorrectMsg[100];    // last correct message for send on SMS command trigger
+#define GPS_UART_DMA_Rx_BUFF_SIZE 256
+#define GPS_MSG_BUFF_SIZE 256
 
-void GPSinit()
+UART_DMA_Rx_t respBuff;
+GPS_Msg_t msgBuff;
+
+uint8_t _msgBuff[GPS_MSG_BUFF_SIZE];
+uint8_t _respTmpBuff[GPS_UART_DMA_Rx_BUFF_SIZE];
+uint8_t _parsedMsgBuff[GPS_MSG_BUFF_SIZE];
+UART_HandleTypeDef *GPShuart;
+
+static void _initReceiveBuff();
+static void _initMsgBuff();
+static void _clearReceiveBuff();
+
+// TODO remove
+extern UART_HandleTypeDef huart1;
+
+
+void GPSinit(UART_HandleTypeDef *huart)
 {
-    memset(respTmpBuff, 0, sizeof(respTmpBuff));
-    memset(lastCorrectMsg, 0, sizeof(lastCorrectMsg));
+    GPShuart = huart;
+
+    // init DMA Rx buffers
+    _initReceiveBuff();
+
+    // init parsed msg buff
+    _initMsgBuff();
+
+    // start UART DMA to receive messages
+    HAL_StatusTypeDef res = HAL_UART_Receive_DMA(respBuff.huart, (uint8_t*)respBuff.respTmpBuff, respBuff.respTmpBuffSize);
+
+    if (res == HAL_ERROR) {
+        Error_Handler();
+    }
+
+
 }
 
 /**
- * wait data from GPS module & save into respTmpBuff
+ * wait data from GPS module
  * @return link to respTmpBuff
  */
-char* GPS_waitAndHandleMessage(UART_HandleTypeDef *huart)
+GPS_Msg_t* GPS_waitMessage(uint32_t timeout)
 {
-    HAL_StatusTypeDef res = HAL_UART_Receive_IT(huart, (uint8_t*)respTmpBuff, sizeof(respTmpBuff));
+    uint16_t i = 0, j = 0;
+    uint32_t startTick = HAL_GetTick();
+    uint8_t msgFound = 0;
+    uint32_t currTick;
 
-    // TODO check end of respTmpBuff and save to SD
+    // reset msg
+    for (i = 0; i < msgBuff.msgBuffSize; i++) {
+        msgBuff.msg[i] = '\0';
+    }
+    msgBuff.isMsgReceived = 0;
 
+    do {
+        UART_DMA_Check_Rx_Buff(&respBuff);
 
+        for (i = 0; i < respBuff.receivedMsgBuffSize; i++) {
 
-    memset(respTmpBuff, 0, sizeof(respTmpBuff));
+            // found start msg
+            if (msgBuff.msg[0] == '\0' && respBuff.receivedMsgBuff[i] == '$'){
+                msgBuff.msg[j++] = respBuff.receivedMsgBuff[i];
 
-    return respTmpBuff;
+            // found end msg
+            } else if (msgBuff.msg[0] != '\0' && respBuff.receivedMsgBuff[i] == '\r') {
+                msgFound = 1;
+                break;
+
+            // copy message
+            } else if (msgBuff.msg[0] != '\0' && respBuff.receivedMsgBuff[i] != '\0') {
+                msgBuff.msg[j++] = respBuff.receivedMsgBuff[i];
+            }
+        }
+
+        _clearReceiveBuff();
+
+        // message found
+        if (msgFound == 1) { break; }
+
+        currTick = HAL_GetTick();
+    } while( (currTick - startTick) < timeout);
+
+    if (msgFound != 1) {
+        // reset msg
+        for (i = 0; i < msgBuff.msgBuffSize; i++) { msgBuff.msg[i] = '\0'; }
+    } else {
+        msgBuff.isMsgReceived = 1;
+    }
+
+    return &msgBuff;
 }
 
-/**
- * save data (coordinate message from GPS module) to SD
- */
-void GPS_saveMessage(char *tmpBuff)
+static void _initReceiveBuff()
 {
-    // TODO save tmpBuff to SD card
+    respBuff.huart = GPShuart;
+    respBuff.prevCNDTR = GPS_UART_DMA_Rx_BUFF_SIZE;
+    respBuff.receivedMsgBuff = _msgBuff;
+    respBuff.receivedMsgBuffSize = GPS_MSG_BUFF_SIZE;
+    respBuff.respTmpBuff = _respTmpBuff;
+    respBuff.respTmpBuffSize = GPS_UART_DMA_Rx_BUFF_SIZE;
+
+    _clearReceiveBuff();
 }
 
-/**
- * get last data(coordinate message) from SD
- */
-char* GPS_getLastCorrectMessage()
+static void _initMsgBuff()
 {
-    memset(lastCorrectMsg, 0, sizeof(lastCorrectMsg));
+    msgBuff.msgBuffSize = GPS_MSG_BUFF_SIZE;
+    msgBuff.msg = _parsedMsgBuff;
+    msgBuff.isMsgReceived = 0;
+}
 
-    // TODO read last data from SD to lastCorrectMsg & return link to lastCorrectMsg
-
-    return lastCorrectMsg;
+static void _clearReceiveBuff()
+{
+    memset(respBuff.receivedMsgBuff, (uint8_t)'\0', respBuff.receivedMsgBuffSize);
 }
 
 /**
